@@ -13,3 +13,7 @@ codegen-units = 1
 panic = 'abort'
 incremental = false
 overflow-checks = true
+
+[workspace.dependencies]
+multisig = {path="./contracts/multisig"}
+multisig_factory = {path="./contracts/multisig_factory"}
