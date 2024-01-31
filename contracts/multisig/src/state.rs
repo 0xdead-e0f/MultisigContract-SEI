@@ -1,13 +1,27 @@
+use std::fmt::{write, Display};
+
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Coin};
 use cw_storage_plus::{Item, Map};
 
 #[cw_serde]
 pub struct Transaction {
-    pub to: Addr,
-    pub coins: Vec<Coin>,
+    pub tx_msg: TxMsg,
     pub id: u32,
     pub num_confirmations: u32,
+}
+
+#[cw_serde]
+pub enum TxMsg {
+    TxBank { to: Addr, coins: Vec<Coin> },
+    TxSelf(SelfTx),
+}
+
+#[cw_serde]
+pub enum SelfTx {
+    AddOwner { owner: Addr, quorum: Option<u32> },
+    RemoveOwner { owner: Addr, quorum: Option<u32> },
+    UpdateQuorum { quorum: u32 },
 }
 
 trait ToStr {
@@ -21,10 +35,9 @@ impl ToStr for Vec<Coin> {
 }
 
 impl Transaction {
-    pub fn new(to: Addr, id: u32, coins: Vec<Coin>) -> Self {
+    pub fn new(tx_msg: TxMsg, id: u32) -> Self {
         Self {
-            to,
-            coins,
+            tx_msg,
             id,
             num_confirmations: 0,
         }
@@ -33,12 +46,32 @@ impl Transaction {
 
 impl ToString for Transaction {
     fn to_string(&self) -> String {
-        format!(
-            "Transaction {{ to: {}, coin: {}, id: {} }}",
-            self.to,
-            self.coins.to_string(),
-            self.id
-        )
+        format!("Transaction {{ tx_msg: {}, id: {} }}", self.tx_msg, self.id)
+    }
+}
+
+impl Display for TxMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TxMsg::TxSelf(self_msg) => match self_msg {
+                SelfTx::AddOwner { owner, quorum } => write!(
+                    f,
+                    "SelfTx-AddOwner {{owner: {}, quorum: {:?}}}",
+                    owner, quorum
+                ),
+                SelfTx::RemoveOwner { owner, quorum } => write!(
+                    f,
+                    "SelfTx-RemoveOwner {{owner: {}, quorum: {:?}}}",
+                    owner, quorum
+                ),
+                SelfTx::UpdateQuorum { quorum } => {
+                    write!(f, "SelfTx-UpdateQuorum {{quorum: {}}}", quorum)
+                }
+            },
+            TxMsg::TxBank { to, coins } => {
+                write!(f, "BankTx {{to: {}, coin: {}}}", to, coins.to_string())
+            }
+        }
     }
 }
 

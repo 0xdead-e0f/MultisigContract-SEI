@@ -1,7 +1,7 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Addr, Coin};
 
-use crate::state::PendingTransactions;
+use crate::state::{PendingTransactions, TxMsg};
 
 #[cw_serde]
 pub struct InstantiateMsg {
@@ -13,7 +13,7 @@ pub struct InstantiateMsg {
 
 #[cw_serde]
 pub enum ExecuteMsg {
-    CreateTransaction { to: Addr, coins: Vec<Coin> },
+    CreateTransaction { tx_msg: TxMsg },
     SignTransactions { tx_id: u32 },
     ExecuteTransaction { tx_id: u32 },
 }

@@ -49,7 +49,7 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     exec::is_admin(&deps, &info)?;
     match msg {
-        ExecuteMsg::CreateTransaction { to, coins } => exec::create_tx(deps, info, to, coins),
+        ExecuteMsg::CreateTransaction { tx_msg } => exec::create_tx(deps, info, tx_msg),
         ExecuteMsg::SignTransactions { tx_id } => exec::sign_tx(deps, info, tx_id),
         ExecuteMsg::ExecuteTransaction { tx_id } => exec::execute_tx(deps, tx_id),
     }
@@ -57,14 +57,13 @@ pub fn execute(
 
 mod exec {
     use super::*;
-    use crate::state::{PENDING_TXS, SIGNED_TX};
-    use cosmwasm_std::{Addr, BankMsg, Coin};
+    use crate::state::{TxMsg, PENDING_TXS, SIGNED_TX};
+    use cosmwasm_std::{Addr, BankMsg};
 
     pub fn create_tx(
         deps: DepsMut,
         info: MessageInfo,
-        to: Addr,
-        coins: Vec<Coin>,
+        tx_msg: TxMsg,
     ) -> Result<Response, ContractError> {
         let admins = ADMINS.load(deps.storage)?;
 
@@ -74,7 +73,8 @@ mod exec {
 
         let mut pending_txs = PENDING_TXS.load(deps.storage)?;
         let next_id = pending_txs.next_id();
-        let mut tx = Transaction::new(to, next_id, coins);
+        let mut tx = Transaction::new(tx_msg, next_id);
+
         tx.num_confirmations = 1;
         pending_txs.push(tx.clone());
         PENDING_TXS.save(deps.storage, &pending_txs)?;
@@ -127,12 +127,24 @@ mod exec {
             });
         }
 
-        let message = BankMsg::Send {
-            to_address: tx.to.to_string(),
-            amount: tx.coins.clone(),
+        let response = match tx.tx_msg.clone() {
+            TxMsg::TxBank { to, coins } => {
+                let message = BankMsg::Send {
+                    to_address: to.to_string(),
+                    amount: coins.clone(),
+                };
+                Ok(Response::new().add_message(message))
+            }
+            TxMsg::TxSelf(self_msg) => match self_msg {
+                crate::state::SelfTx::AddOwner { owner, quorum } => add_owner(deps, owner, quorum),
+                crate::state::SelfTx::RemoveOwner { owner, quorum } => {
+                    remove_owner(deps, owner, quorum)
+                }
+                crate::state::SelfTx::UpdateQuorum { quorum } => update_quorum(deps, quorum),
+            },
         };
 
-        Ok(Response::new().add_message(message))
+        response
     }
 
     pub fn is_admin(deps: &DepsMut, info: &MessageInfo) -> Result<(), ContractError> {
@@ -142,6 +154,63 @@ mod exec {
         }
 
         Ok(())
+    }
+
+    fn add_owner(
+        deps: DepsMut,
+        owner: Addr,
+        quorum: Option<u32>,
+    ) -> Result<Response, ContractError> {
+        let mut admins = ADMINS.load(deps.storage)?;
+        admins.push(owner);
+
+        if let Some(quorum_val) = quorum {
+            if quorum_val > admins.len() as u32 {
+                return Err(ContractError::WrongQuorum {
+                    quorum: quorum_val,
+                    owners: admins.len() as u32,
+                });
+            }
+            QUORUM.save(deps.storage, &quorum_val)?;
+        }
+        ADMINS.save(deps.storage, &admins)?;
+
+        Ok(Response::new())
+    }
+
+    fn remove_owner(
+        deps: DepsMut,
+        owner: Addr,
+        quorum: Option<u32>,
+    ) -> Result<Response, ContractError> {
+        let mut admins = ADMINS.load(deps.storage)?;
+        let index = admins.iter().position(|x| *x == owner).unwrap();
+        admins.remove(index);
+
+        if let Some(quorum_val) = quorum {
+            if quorum_val > admins.len() as u32 {
+                return Err(ContractError::WrongQuorum {
+                    quorum: quorum_val,
+                    owners: admins.len() as u32,
+                });
+            }
+            QUORUM.save(deps.storage, &quorum_val)?;
+        }
+
+        ADMINS.save(deps.storage, &admins)?;
+        Ok(Response::new())
+    }
+
+    fn update_quorum(deps: DepsMut, quorum: u32) -> Result<Response, ContractError> {
+        let admins = ADMINS.load(deps.storage)?;
+        if quorum > admins.len() as u32 {
+            return Err(ContractError::WrongQuorum {
+                quorum: quorum,
+                owners: admins.len() as u32,
+            });
+        }
+        QUORUM.save(deps.storage, &quorum)?;
+        Ok(Response::new())
     }
 }
 
