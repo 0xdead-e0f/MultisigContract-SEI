@@ -1,26 +1,46 @@
 use cosmwasm_std::StdError;
+use cw_utils::ThresholdError;
+
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
 
+    #[error("{0}")]
+    Threshold(#[from] ThresholdError),
+
+    #[error("Required weight cannot be zero")]
+    ZeroWeight {},
+
+    #[error("Not possible to reach required (passing) weight")]
+    UnreachableWeight {},
+
+    #[error("No voters")]
+    NoVoters {},
+
     #[error("Unauthorized")]
     Unauthorized {},
 
-    #[error("Quorum: {quorum} is more than the number of owners: {owners}")]
-    WrongQuorum { quorum: u32, owners: u32 },
+    #[error("Proposal is not open")]
+    NotOpen {},
 
-    #[error("Number of owners can't be 0")]
-    ZeroOwners,
+    #[error("Proposal voting period has expired")]
+    Expired {},
 
-    #[error("Transaction with tx_id: {0}, doesn't exist")]
-    NonExistentTx(u32),
+    #[error("Proposal must expire before you can close it")]
+    NotExpired {},
 
-    #[error("You already signed transaction with id: {0}")]
-    AlreadySigned(u32),
+    #[error("Wrong expiration option")]
+    WrongExpiration {},
 
-    #[error("Not enough admins signed this transaction, the quorum is {quorum} and only {num_signed} signed the transaction")]
-    NotEnoughSignatures { quorum: u32, num_signed: u32 },
+    #[error("Already voted on this proposal")]
+    AlreadyVoted {},
+
+    #[error("Proposal must have passed and not yet been executed")]
+    WrongExecuteStatus {},
+
+    #[error("Cannot close completed or passed proposals")]
+    WrongCloseStatus {},
 }

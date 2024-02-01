@@ -1,110 +1,30 @@
-use std::fmt::{write, Display};
-
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Coin};
+use cosmwasm_std::{Addr, StdResult, Storage};
+
+use cw3::{Ballot, Proposal};
 use cw_storage_plus::{Item, Map};
+use cw_utils::{Duration, Threshold};
 
 #[cw_serde]
-pub struct Transaction {
-    pub tx_msg: TxMsg,
-    pub id: u32,
-    pub num_confirmations: u32,
+pub struct Config {
+    pub threshold: Threshold,
+    pub total_weight: u64,
+    pub max_voting_period: Duration,
 }
 
-#[cw_serde]
-pub enum TxMsg {
-    TxBank { to: Addr, coins: Vec<Coin> },
-    TxSelf(SelfTx),
+// unique items
+pub const CONFIG: Item<Config> = Item::new("config");
+pub const PROPOSAL_COUNT: Item<u64> = Item::new("proposal_count");
+
+// multiple-item map
+pub const BALLOTS: Map<(u64, &Addr), Ballot> = Map::new("votes");
+pub const PROPOSALS: Map<u64, Proposal> = Map::new("proposals");
+
+// multiple-item maps
+pub const VOTERS: Map<&Addr, u64> = Map::new("voters");
+
+pub fn next_id(store: &mut dyn Storage) -> StdResult<u64> {
+    let id: u64 = PROPOSAL_COUNT.may_load(store)?.unwrap_or_default() + 1;
+    PROPOSAL_COUNT.save(store, &id)?;
+    Ok(id)
 }
-
-#[cw_serde]
-pub enum SelfTx {
-    AddOwner { owner: Addr, quorum: Option<u32> },
-    RemoveOwner { owner: Addr, quorum: Option<u32> },
-    UpdateQuorum { quorum: u32 },
-}
-
-trait ToStr {
-    fn to_string(&self) -> String;
-}
-
-impl ToStr for Vec<Coin> {
-    fn to_string(&self) -> String {
-        self.iter().map(|coin| coin.to_string()).collect::<String>()
-    }
-}
-
-impl Transaction {
-    pub fn new(tx_msg: TxMsg, id: u32) -> Self {
-        Self {
-            tx_msg,
-            id,
-            num_confirmations: 0,
-        }
-    }
-}
-
-impl ToString for Transaction {
-    fn to_string(&self) -> String {
-        format!("Transaction {{ tx_msg: {}, id: {} }}", self.tx_msg, self.id)
-    }
-}
-
-impl Display for TxMsg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TxMsg::TxSelf(self_msg) => match self_msg {
-                SelfTx::AddOwner { owner, quorum } => write!(
-                    f,
-                    "SelfTx-AddOwner {{owner: {}, quorum: {:?}}}",
-                    owner, quorum
-                ),
-                SelfTx::RemoveOwner { owner, quorum } => write!(
-                    f,
-                    "SelfTx-RemoveOwner {{owner: {}, quorum: {:?}}}",
-                    owner, quorum
-                ),
-                SelfTx::UpdateQuorum { quorum } => {
-                    write!(f, "SelfTx-UpdateQuorum {{quorum: {}}}", quorum)
-                }
-            },
-            TxMsg::TxBank { to, coins } => {
-                write!(f, "BankTx {{to: {}, coin: {}}}", to, coins.to_string())
-            }
-        }
-    }
-}
-
-#[cw_serde]
-pub struct PendingTransactions(pub Vec<Transaction>);
-
-impl PendingTransactions {
-    pub fn new(txs: Vec<Transaction>) -> Self {
-        Self(txs)
-    }
-
-    pub fn index(&self, index: u32) -> Option<&Transaction> {
-        self.0.iter().nth(index as usize)
-    }
-
-    pub fn next_id(&self) -> u32 {
-        self.0.len() as u32
-    }
-
-    pub fn push(&mut self, tx: Transaction) {
-        self.0.push(tx);
-    }
-
-    pub fn find_mut(&mut self, tx_id: u32) -> Option<&mut Transaction> {
-        self.0.iter_mut().find(|tx| tx.id == tx_id)
-    }
-
-    pub fn find(&self, tx_id: u32) -> Option<&Transaction> {
-        self.0.iter().find(|tx| tx.id == tx_id)
-    }
-}
-
-pub const ADMINS: Item<Vec<Addr>> = Item::new("admins");
-pub const QUORUM: Item<u32> = Item::new("quorum");
-pub const PENDING_TXS: Item<PendingTransactions> = Item::new("pending_txs");
-pub const SIGNED_TX: Map<(Addr, u32), bool> = Map::new("signed_tx");

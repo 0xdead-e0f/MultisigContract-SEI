@@ -1,253 +1,727 @@
+use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
+use cosmwasm_std::{
+    coin, from_binary, BankMsg, CosmosMsg, Decimal, Deps, DepsMut, Empty, Env, MessageInfo,
+    Response,
+};
 
-#[cfg(test)]
-mod tests {
-    use crate::msg::{ListPendingResp, ListSignedResp};
+use cw2::{get_contract_version, ContractVersion};
+use cw3::{ProposalResponse, Status, Vote, VoteListResponse};
+use cw_utils::{Duration, Expiration, Threshold};
 
-    use super::*;
-    use cosmwasm_std::{coins, Addr, Coin};
-    use cw_multi_test::{App, ContractWrapper, Executor};
+use crate::contract::{execute, CONTRACT_NAME, CONTRACT_VERSION};
+use crate::msg::{ExecuteMsg, Voter};
 
-    fn instantiate_contract() -> (Addr, App) {
-        let mut app = App::new(|router, _, storage| {
-            router
-                .bank
-                .init_balance(storage, &Addr::unchecked("owner"), coins(5, "atom"))
-                .unwrap();
-        });
+use self::contract::{instantiate, query};
+use self::msg::{InstantiateMsg, QueryMsg};
 
-        let code = ContractWrapper::new(execute, instantiate, query);
-        let code_id = app.store_code(Box::new(code));
+use super::*;
 
-        let coin = Coin::new(5, "atom");
+fn mock_env_height(height_delta: u64) -> Env {
+    let mut env = mock_env();
+    env.block.height += height_delta;
+    env
+}
 
-        let addr = app
-            .instantiate_contract(
-                code_id,
-                Addr::unchecked("owner"),
-                &InstantiateMsg {
-                    owners: vec![
-                        Addr::unchecked("owner1"),
-                        Addr::unchecked("owner2"),
-                        Addr::unchecked("owner3"),
-                    ],
-                    quorum: 2,
-                },
-                &[coin],
-                "Multisig",
-                None,
-            )
-            .unwrap();
+fn mock_env_time(time_delta: u64) -> Env {
+    let mut env = mock_env();
+    env.block.time = env.block.time.plus_seconds(time_delta);
+    env
+}
 
-        (addr, app)
+const OWNER: &str = "admin0001";
+const VOTER1: &str = "voter0001";
+const VOTER2: &str = "voter0002";
+const VOTER3: &str = "voter0003";
+const VOTER4: &str = "voter0004";
+const VOTER5: &str = "voter0005";
+const VOTER6: &str = "voter0006";
+const NOWEIGHT_VOTER: &str = "voterxxxx";
+const SOMEBODY: &str = "somebody";
+
+fn voter<T: Into<String>>(addr: T, weight: u64) -> Voter {
+    Voter {
+        addr: addr.into(),
+        weight,
     }
+}
 
-    #[test]
-    fn test_instantiate() {
-        let (addr, app) = instantiate_contract();
+// this will set up the instantiation for other tests
+#[track_caller]
+fn setup_test_case(
+    deps: DepsMut,
+    info: MessageInfo,
+    threshold: Threshold,
+    max_voting_period: Duration,
+) -> Result<Response<Empty>, ContractError> {
+    // Instantiate a contract with voters
+    let voters = vec![
+        voter(&info.sender, 1),
+        voter(VOTER1, 1),
+        voter(VOTER2, 2),
+        voter(VOTER3, 3),
+        voter(VOTER4, 4),
+        voter(VOTER5, 5),
+        voter(VOTER6, 1),
+        voter(NOWEIGHT_VOTER, 0),
+    ];
 
-        let balance: Vec<Coin> = app.wrap().query_all_balances(&addr).unwrap();
-        assert_eq!(vec![Coin::new(5, "atom")], balance);
-    }
+    let instantiate_msg = InstantiateMsg {
+        voters,
+        threshold,
+        max_voting_period,
+    };
+    instantiate(deps, mock_env(), info, instantiate_msg)
+}
 
-    #[test]
-    #[should_panic(expected = "Unauthorized")]
-    fn test_propose_unauthorized() {
-        let (addr, mut app) = instantiate_contract();
+fn get_tally(deps: Deps, proposal_id: u64) -> u64 {
+    // Get all the voters on the proposal
+    let voters = QueryMsg::ListVotes {
+        proposal_id,
+        start_after: None,
+        limit: None,
+    };
+    let votes: VoteListResponse = from_binary(&query(deps, mock_env(), voters).unwrap()).unwrap();
+    // Sum the weights of the Yes votes to get the tally
+    votes
+        .votes
+        .iter()
+        .filter(|&v| v.vote == Vote::Yes)
+        .map(|v| v.weight)
+        .sum()
+}
 
-        let msg = ExecuteMsg::CreateTransaction {
-            to: Addr::unchecked("owner"),
-            coins: vec![Coin::new(5, "atom")],
-        };
-        app.execute_contract(Addr::unchecked("unathorized"), addr.clone(), &msg, &[])
-            .unwrap();
-    }
+#[test]
+fn test_instantiate_works() {
+    let mut deps = mock_dependencies();
+    let info = mock_info(OWNER, &[]);
 
-    #[test]
-    fn test_propose() {
-        let (addr, mut app) = instantiate_contract();
+    let max_voting_period = Duration::Time(1234567);
 
-        let msg = ExecuteMsg::CreateTransaction {
-            to: Addr::unchecked("owner"),
-            coins: vec![Coin::new(5, "atom")],
-        };
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
-        let msg = QueryMsg::ListPending {};
+    // No voters fails
+    let instantiate_msg = InstantiateMsg {
+        voters: vec![],
+        threshold: Threshold::ThresholdQuorum {
+            threshold: Decimal::zero(),
+            quorum: Decimal::percent(1),
+        },
+        max_voting_period,
+    };
+    let err = instantiate(
+        deps.as_mut(),
+        mock_env(),
+        info.clone(),
+        instantiate_msg.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(err, ContractError::NoVoters {});
 
-        let resp: ListPendingResp = app.wrap().query_wasm_smart(addr, &msg).unwrap();
-        let mut tx = Transaction::new(Addr::unchecked("owner"), 0, vec![Coin::new(5, "atom")]);
-        tx.num_confirmations = 1;
-        assert_eq!(&tx, resp.transactions.index(0).unwrap());
-    }
+    // Zero required weight fails
+    let instantiate_msg = InstantiateMsg {
+        voters: vec![voter(OWNER, 1)],
+        ..instantiate_msg
+    };
+    let err = instantiate(deps.as_mut(), mock_env(), info.clone(), instantiate_msg).unwrap_err();
+    assert_eq!(
+        err,
+        ContractError::Threshold(cw_utils::ThresholdError::InvalidThreshold {})
+    );
 
-    #[test]
-    #[should_panic(expected = "You already signed transaction with id: 0")]
-    fn test_sign_after_already_signed() {
-        let (addr, mut app) = instantiate_contract();
+    // Total weight less than required weight not allowed
+    let threshold = Threshold::AbsoluteCount { weight: 100 };
+    let err =
+        setup_test_case(deps.as_mut(), info.clone(), threshold, max_voting_period).unwrap_err();
+    assert_eq!(
+        err,
+        ContractError::Threshold(cw_utils::ThresholdError::UnreachableWeight {})
+    );
 
-        let msg = ExecuteMsg::CreateTransaction {
-            to: Addr::unchecked("owner"),
-            coins: vec![Coin::new(5, "atom")],
-        };
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
+    // All valid
+    let threshold = Threshold::AbsoluteCount { weight: 1 };
+    setup_test_case(deps.as_mut(), info, threshold, max_voting_period).unwrap();
 
-        let msg = ExecuteMsg::SignTransactions { tx_id: 0 };
+    // Verify
+    assert_eq!(
+        ContractVersion {
+            contract: CONTRACT_NAME.to_string(),
+            version: CONTRACT_VERSION.to_string(),
+        },
+        get_contract_version(&deps.storage).unwrap()
+    )
+}
 
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
-    }
+// TODO: query() tests
 
-    #[test]
-    fn test_sign() {
-        let (addr, mut app) = instantiate_contract();
+#[test]
+fn zero_weight_member_cant_vote() {
+    let mut deps = mock_dependencies();
 
-        let msg = ExecuteMsg::CreateTransaction {
-            to: Addr::unchecked("owner"),
-            coins: vec![Coin::new(5, "atom")],
-        };
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
+    let threshold = Threshold::AbsoluteCount { weight: 4 };
+    let voting_period = Duration::Time(2000000);
 
-        let msg = ExecuteMsg::SignTransactions { tx_id: 0 };
+    let info = mock_info(OWNER, &[]);
+    setup_test_case(deps.as_mut(), info, threshold, voting_period).unwrap();
 
-        app.execute_contract(Addr::unchecked("owner2"), addr.clone(), &msg, &[])
-            .unwrap();
-        app.execute_contract(Addr::unchecked("owner3"), addr.clone(), &msg, &[])
-            .unwrap();
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
 
-        let resp_owner1: ListSignedResp = app
-            .wrap()
-            .query_wasm_smart(
-                addr.clone(),
-                &QueryMsg::ListSigned {
-                    admin: Addr::unchecked("owner2"),
-                    tx_id: 0,
-                },
-            )
-            .unwrap();
+    // Voter without voting power still can create proposal
+    let info = mock_info(NOWEIGHT_VOTER, &[]);
+    let proposal = ExecuteMsg::Propose {
+        title: "Rewarding somebody".to_string(),
+        description: "Do we reward her?".to_string(),
+        msgs,
+        latest: None,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info, proposal).unwrap();
 
-        let resp_owner2: ListSignedResp = app
-            .wrap()
-            .query_wasm_smart(
-                addr.clone(),
-                &QueryMsg::ListSigned {
-                    admin: Addr::unchecked("owner2"),
-                    tx_id: 0,
-                },
-            )
-            .unwrap();
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
 
-        let resp_owner3: ListSignedResp = app
-            .wrap()
-            .query_wasm_smart(
-                addr.clone(),
-                &QueryMsg::ListSigned {
-                    admin: Addr::unchecked("owner3"),
-                    tx_id: 0,
-                },
-            )
-            .unwrap();
+    // Cast a No vote
+    let no_vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::No,
+    };
+    // Only voters with weight can vote
+    let info = mock_info(NOWEIGHT_VOTER, &[]);
+    let err = execute(deps.as_mut(), mock_env(), info, no_vote).unwrap_err();
+    assert_eq!(err, ContractError::Unauthorized {});
+}
 
-        assert_eq!(resp_owner1.signed, true);
-        assert_eq!(resp_owner2.signed, true);
-        assert_eq!(resp_owner3.signed, true);
+#[test]
+fn test_propose_works() {
+    let mut deps = mock_dependencies();
 
-        let resp: ListPendingResp = app
-            .wrap()
-            .query_wasm_smart(addr, &QueryMsg::ListPending {})
-            .unwrap();
+    let threshold = Threshold::AbsoluteCount { weight: 4 };
+    let voting_period = Duration::Time(2000000);
 
-        assert_eq!(resp.transactions.index(0).unwrap().num_confirmations, 3);
-    }
+    let info = mock_info(OWNER, &[]);
+    setup_test_case(deps.as_mut(), info, threshold, voting_period).unwrap();
 
-    #[test]
-    #[should_panic(
-        expected = "Not enough admins signed this transaction, the quorum is 2 and only 1 signed the transaction"
-    )]
-    fn test_execute_under_quorum() {
-        let (addr, mut app) = instantiate_contract();
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
 
-        let msg = ExecuteMsg::CreateTransaction {
-            to: Addr::unchecked("owner"),
-            coins: vec![Coin::new(5, "atom")],
-        };
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
+    // Only voters can propose
+    let info = mock_info(SOMEBODY, &[]);
+    let proposal = ExecuteMsg::Propose {
+        title: "Rewarding somebody".to_string(),
+        description: "Do we reward her?".to_string(),
+        msgs: msgs.clone(),
+        latest: None,
+    };
+    let err = execute(deps.as_mut(), mock_env(), info, proposal.clone()).unwrap_err();
+    assert_eq!(err, ContractError::Unauthorized {});
 
-        let msg = ExecuteMsg::ExecuteTransaction { tx_id: 0 };
+    // Wrong expiration option fails
+    let info = mock_info(OWNER, &[]);
+    let proposal_wrong_exp = ExecuteMsg::Propose {
+        title: "Rewarding somebody".to_string(),
+        description: "Do we reward her?".to_string(),
+        msgs,
+        latest: Some(Expiration::AtHeight(123456)),
+    };
+    let err = execute(deps.as_mut(), mock_env(), info, proposal_wrong_exp).unwrap_err();
+    assert_eq!(err, ContractError::WrongExpiration {});
 
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
-    }
+    // Proposal from voter works
+    let info = mock_info(VOTER3, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, proposal.clone()).unwrap();
 
-    #[test]
-    fn test_execute() {
-        let (addr, mut app) = instantiate_contract();
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "propose")
+            .add_attribute("sender", VOTER3)
+            .add_attribute("proposal_id", 1.to_string())
+            .add_attribute("status", "Open")
+    );
 
-        let msg = ExecuteMsg::CreateTransaction {
-            to: Addr::unchecked("owner"),
-            coins: vec![Coin::new(5, "atom")],
-        };
-        app.execute_contract(Addr::unchecked("owner1"), addr.clone(), &msg, &[])
-            .unwrap();
+    // Proposal from voter with enough vote power directly passes
+    let info = mock_info(VOTER4, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, proposal).unwrap();
 
-        let msg = ExecuteMsg::SignTransactions { tx_id: 0 };
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "propose")
+            .add_attribute("sender", VOTER4)
+            .add_attribute("proposal_id", 2.to_string())
+            .add_attribute("status", "Passed")
+    );
+}
 
-        app.execute_contract(Addr::unchecked("owner2"), addr.clone(), &msg, &[])
-            .unwrap();
-        app.execute_contract(Addr::unchecked("owner3"), addr.clone(), &msg, &[])
-            .unwrap();
+#[test]
+fn test_vote_works() {
+    let mut deps = mock_dependencies();
 
-        let resp_owner1: ListSignedResp = app
-            .wrap()
-            .query_wasm_smart(
-                addr.clone(),
-                &QueryMsg::ListSigned {
-                    admin: Addr::unchecked("owner2"),
-                    tx_id: 0,
-                },
-            )
-            .unwrap();
+    let threshold = Threshold::AbsoluteCount { weight: 3 };
+    let voting_period = Duration::Time(2000000);
 
-        let resp_owner2: ListSignedResp = app
-            .wrap()
-            .query_wasm_smart(
-                addr.clone(),
-                &QueryMsg::ListSigned {
-                    admin: Addr::unchecked("owner2"),
-                    tx_id: 0,
-                },
-            )
-            .unwrap();
+    let info = mock_info(OWNER, &[]);
+    setup_test_case(deps.as_mut(), info.clone(), threshold, voting_period).unwrap();
 
-        let resp_owner3: ListSignedResp = app
-            .wrap()
-            .query_wasm_smart(
-                addr.clone(),
-                &QueryMsg::ListSigned {
-                    admin: Addr::unchecked("owner3"),
-                    tx_id: 0,
-                },
-            )
-            .unwrap();
+    // Propose
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
+    let proposal = ExecuteMsg::Propose {
+        title: "Pay somebody".to_string(),
+        description: "Do I pay her?".to_string(),
+        msgs,
+        latest: None,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info.clone(), proposal).unwrap();
 
-        assert_eq!(resp_owner1.signed, true);
-        assert_eq!(resp_owner2.signed, true);
-        assert_eq!(resp_owner3.signed, true);
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
 
-        let msg = ExecuteMsg::ExecuteTransaction { tx_id: 0 };
+    // Owner cannot vote (again)
+    let yes_vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::Yes,
+    };
+    let err = execute(deps.as_mut(), mock_env(), info, yes_vote.clone()).unwrap_err();
+    assert_eq!(err, ContractError::AlreadyVoted {});
 
-        app.execute_contract(Addr::unchecked("owner3"), addr.clone(), &msg, &[])
-            .unwrap();
+    // Only voters can vote
+    let info = mock_info(SOMEBODY, &[]);
+    let err = execute(deps.as_mut(), mock_env(), info, yes_vote.clone()).unwrap_err();
+    assert_eq!(err, ContractError::Unauthorized {});
 
-        let balance: Coin = app.wrap().query_balance(&addr, "atom").unwrap();
-        assert_eq!(Coin::new(0, "atom"), balance);
+    // But voter1 can
+    let info = mock_info(VOTER1, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, yes_vote.clone()).unwrap();
 
-        let balance: Coin = app
-            .wrap()
-            .query_balance(&Addr::unchecked("owner"), "atom")
-            .unwrap();
-        assert_eq!(Coin::new(5, "atom"), balance);
-    }
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER1)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Open")
+    );
+
+    // No/Veto votes have no effect on the tally
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
+
+    // Compute the current tally
+    let tally = get_tally(deps.as_ref(), proposal_id);
+
+    // Cast a No vote
+    let no_vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::No,
+    };
+    let info = mock_info(VOTER2, &[]);
+    execute(deps.as_mut(), mock_env(), info, no_vote.clone()).unwrap();
+
+    // Cast a Veto vote
+    let veto_vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::Veto,
+    };
+    let info = mock_info(VOTER3, &[]);
+    execute(deps.as_mut(), mock_env(), info.clone(), veto_vote).unwrap();
+
+    // Verify
+    assert_eq!(tally, get_tally(deps.as_ref(), proposal_id));
+
+    // Once voted, votes cannot be changed
+    let err = execute(deps.as_mut(), mock_env(), info.clone(), yes_vote.clone()).unwrap_err();
+    assert_eq!(err, ContractError::AlreadyVoted {});
+    assert_eq!(tally, get_tally(deps.as_ref(), proposal_id));
+
+    // Expired proposals cannot be voted
+    let env = match voting_period {
+        Duration::Time(duration) => mock_env_time(duration + 1),
+        Duration::Height(duration) => mock_env_height(duration + 1),
+    };
+    let err = execute(deps.as_mut(), env, info, no_vote).unwrap_err();
+    assert_eq!(err, ContractError::Expired {});
+
+    // Vote it again, so it passes
+    let info = mock_info(VOTER4, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, yes_vote.clone()).unwrap();
+
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER4)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Passed")
+    );
+
+    // Passed proposals can still be voted (while they are not expired or executed)
+    let info = mock_info(VOTER5, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, yes_vote).unwrap();
+
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER5)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Passed")
+    );
+
+    // Propose
+    let info = mock_info(OWNER, &[]);
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
+    let proposal = ExecuteMsg::Propose {
+        title: "Pay somebody".to_string(),
+        description: "Do I pay her?".to_string(),
+        msgs,
+        latest: None,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info, proposal).unwrap();
+
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
+
+    // Cast a No vote
+    let no_vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::No,
+    };
+    // Voter1 vote no, weight 1
+    let info = mock_info(VOTER1, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, no_vote.clone()).unwrap();
+
+    // Verify it is not enough to reject yet
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER1)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Open")
+    );
+
+    // Voter 4 votes no, weight 4, total weight for no so far 5, need 14 to reject
+    let info = mock_info(VOTER4, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, no_vote.clone()).unwrap();
+
+    // Verify it is still open as we actually need no votes > 17 - 3
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER4)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Open")
+    );
+
+    // Voter 3 votes no, weight 3, total weight for no far 8, need 14
+    let info = mock_info(VOTER3, &[]);
+    let _res = execute(deps.as_mut(), mock_env(), info, no_vote.clone()).unwrap();
+
+    // Voter 5 votes no, weight 5, total weight for no far 13, need 14
+    let info = mock_info(VOTER5, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, no_vote.clone()).unwrap();
+
+    // Verify it is still open as we actually need no votes > 17 - 3
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER5)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Open")
+    );
+
+    // Voter 2 votes no, weight 2, total weight for no so far 15, need 14.
+    // Can now reject
+    let info = mock_info(VOTER2, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, no_vote).unwrap();
+
+    // Verify it is rejected as, 15 no votes > 17 - 3
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER2)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Rejected")
+    );
+
+    // Rejected proposals can still be voted (while they are not expired)
+    let info = mock_info(VOTER6, &[]);
+    let yes_vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::Yes,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info, yes_vote).unwrap();
+
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER6)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Rejected")
+    );
+}
+
+#[test]
+fn test_execute_works() {
+    let mut deps = mock_dependencies();
+
+    let threshold = Threshold::AbsoluteCount { weight: 3 };
+    let voting_period = Duration::Time(2000000);
+
+    let info = mock_info(OWNER, &[]);
+    setup_test_case(deps.as_mut(), info.clone(), threshold, voting_period).unwrap();
+
+    // Propose
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
+    let proposal = ExecuteMsg::Propose {
+        title: "Pay somebody".to_string(),
+        description: "Do I pay her?".to_string(),
+        msgs: msgs.clone(),
+        latest: None,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info.clone(), proposal).unwrap();
+
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
+
+    // Only Passed can be executed
+    let execution = ExecuteMsg::Execute { proposal_id };
+    let err = execute(deps.as_mut(), mock_env(), info, execution.clone()).unwrap_err();
+    assert_eq!(err, ContractError::WrongExecuteStatus {});
+
+    // Vote it, so it passes
+    let vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::Yes,
+    };
+    let info = mock_info(VOTER3, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info.clone(), vote).unwrap();
+
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER3)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Passed")
+    );
+
+    // In passing: Try to close Passed fails
+    let closing = ExecuteMsg::Close { proposal_id };
+    let err = execute(deps.as_mut(), mock_env(), info, closing).unwrap_err();
+    assert_eq!(err, ContractError::WrongCloseStatus {});
+
+    // Execute works. Anybody can execute Passed proposals
+    let info = mock_info(SOMEBODY, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info.clone(), execution).unwrap();
+
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_messages(msgs)
+            .add_attribute("action", "execute")
+            .add_attribute("sender", SOMEBODY)
+            .add_attribute("proposal_id", proposal_id.to_string())
+    );
+
+    // In passing: Try to close Executed fails
+    let closing = ExecuteMsg::Close { proposal_id };
+    let err = execute(deps.as_mut(), mock_env(), info, closing).unwrap_err();
+    assert_eq!(err, ContractError::WrongCloseStatus {});
+}
+
+#[test]
+fn proposal_pass_on_expiration() {
+    let mut deps = mock_dependencies();
+
+    let threshold = Threshold::ThresholdQuorum {
+        threshold: Decimal::percent(51),
+        quorum: Decimal::percent(1),
+    };
+    let voting_period = Duration::Time(2000000);
+
+    let info = mock_info(OWNER, &[]);
+    setup_test_case(deps.as_mut(), info.clone(), threshold, voting_period).unwrap();
+
+    // Propose
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
+    let proposal = ExecuteMsg::Propose {
+        title: "Pay somebody".to_string(),
+        description: "Do I pay her?".to_string(),
+        msgs,
+        latest: None,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info, proposal).unwrap();
+
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
+
+    // Vote it, so it passes after voting period is over
+    let vote = ExecuteMsg::Vote {
+        proposal_id,
+        vote: Vote::Yes,
+    };
+    let info = mock_info(VOTER3, &[]);
+    let res = execute(deps.as_mut(), mock_env(), info, vote).unwrap();
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "vote")
+            .add_attribute("sender", VOTER3)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .add_attribute("status", "Open")
+    );
+
+    // Wait until the voting period is over
+    let env = match voting_period {
+        Duration::Time(duration) => mock_env_time(duration + 1),
+        Duration::Height(duration) => mock_env_height(duration + 1),
+    };
+
+    // Proposal should now be passed
+    let prop: ProposalResponse = from_binary(
+        &query(
+            deps.as_ref(),
+            env.clone(),
+            QueryMsg::Proposal { proposal_id },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(prop.status, Status::Passed);
+
+    // Closing should NOT be possible
+    let info = mock_info(SOMEBODY, &[]);
+    let err = execute(
+        deps.as_mut(),
+        env.clone(),
+        info.clone(),
+        ExecuteMsg::Close { proposal_id },
+    )
+    .unwrap_err();
+    assert_eq!(err, ContractError::WrongCloseStatus {});
+
+    // Execution should now be possible
+    let res = execute(
+        deps.as_mut(),
+        env,
+        info,
+        ExecuteMsg::Execute { proposal_id },
+    )
+    .unwrap();
+    assert_eq!(
+        res.attributes,
+        Response::<Empty>::new()
+            .add_attribute("action", "execute")
+            .add_attribute("sender", SOMEBODY)
+            .add_attribute("proposal_id", proposal_id.to_string())
+            .attributes
+    )
+}
+
+#[test]
+fn test_close_works() {
+    let mut deps = mock_dependencies();
+
+    let threshold = Threshold::AbsoluteCount { weight: 3 };
+    let voting_period = Duration::Height(2000000);
+
+    let info = mock_info(OWNER, &[]);
+    setup_test_case(deps.as_mut(), info.clone(), threshold, voting_period).unwrap();
+
+    // Propose
+    let bank_msg = BankMsg::Send {
+        to_address: SOMEBODY.into(),
+        amount: vec![coin(1, "BTC")],
+    };
+    let msgs = vec![CosmosMsg::Bank(bank_msg)];
+    let proposal = ExecuteMsg::Propose {
+        title: "Pay somebody".to_string(),
+        description: "Do I pay her?".to_string(),
+        msgs: msgs.clone(),
+        latest: None,
+    };
+    let res = execute(deps.as_mut(), mock_env(), info, proposal).unwrap();
+
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
+
+    let closing = ExecuteMsg::Close { proposal_id };
+
+    // Anybody can close
+    let info = mock_info(SOMEBODY, &[]);
+
+    // Non-expired proposals cannot be closed
+    let err = execute(deps.as_mut(), mock_env(), info, closing).unwrap_err();
+    assert_eq!(err, ContractError::NotExpired {});
+
+    // Expired proposals can be closed
+    let info = mock_info(OWNER, &[]);
+
+    let proposal = ExecuteMsg::Propose {
+        title: "(Try to) pay somebody".to_string(),
+        description: "Pay somebody after time?".to_string(),
+        msgs,
+        latest: Some(Expiration::AtHeight(123456)),
+    };
+    let res = execute(deps.as_mut(), mock_env(), info.clone(), proposal).unwrap();
+
+    // Get the proposal id from the logs
+    let proposal_id: u64 = res.attributes[2].value.parse().unwrap();
+
+    let closing = ExecuteMsg::Close { proposal_id };
+
+    // Close expired works
+    let env = mock_env_height(1234567);
+    let res = execute(
+        deps.as_mut(),
+        env,
+        mock_info(SOMEBODY, &[]),
+        closing.clone(),
+    )
+    .unwrap();
+
+    // Verify
+    assert_eq!(
+        res,
+        Response::new()
+            .add_attribute("action", "close")
+            .add_attribute("sender", SOMEBODY)
+            .add_attribute("proposal_id", proposal_id.to_string())
+    );
+
+    // Trying to close it again fails
+    let err = execute(deps.as_mut(), mock_env(), info, closing).unwrap_err();
+    assert_eq!(err, ContractError::WrongCloseStatus {});
 }
