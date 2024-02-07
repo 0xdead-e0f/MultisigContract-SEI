@@ -1,4 +1,4 @@
-use std::fmt::{write, Display};
+use std::fmt::Display;
 
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Coin};
