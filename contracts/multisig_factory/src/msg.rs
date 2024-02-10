@@ -8,6 +8,11 @@ pub struct InstantiateMsg {
 }
 
 #[cw_serde]
+pub struct MultisigWallets {
+    pub wallets: Vec<String>,
+}
+
+#[cw_serde]
 pub enum ExecuteMsg {
     /// Instantiates a new multisig contract that is funded by a native token.
     InstantiateMultiSigContract {
@@ -22,4 +27,7 @@ pub enum ExecuteMsg {
 
 #[cw_serde]
 #[derive(QueryResponses)]
-pub enum QueryMsg {}
+pub enum QueryMsg {
+    #[returns(cosmwasm_std::Binary)]
+    GetMultisigWallets {},
+}

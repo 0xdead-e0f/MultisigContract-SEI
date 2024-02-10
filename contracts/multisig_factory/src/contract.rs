@@ -1,17 +1,16 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Binary, Coin, Deps, DepsMut, Env, MessageInfo, Reply, Response,
+    to_json_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
     StdResult, SubMsg, WasmMsg,
 };
 use multisig::msg::InstantiateMsg as MultiSigInstantiateMsg;
 
 use cw2::set_contract_version;
-use cw_utils::parse_reply_instantiate_data;
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::MULTISIG_CODE_ID;
+use crate::msg::{ExecuteMsg, InstantiateMsg, MultisigWallets, QueryMsg};
+use crate::state::{MINTED_MULTISIG_WALLETS, MULTISIG_CODE_ID};
 
 pub(crate) const CONTRACT_NAME: &str = "crates.io:cw-multisig-factory";
 pub(crate) const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,11 +49,6 @@ pub fn execute(
     }
 }
 
-#[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(_deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
-    match msg {}
-}
-
 pub fn execute_update_code_id(
     deps: DepsMut,
     info: MessageInfo,
@@ -73,26 +67,15 @@ pub fn execute_instantiate_multisig_contract(
     instantiate_msg: MultiSigInstantiateMsg,
     label: String,
 ) -> Result<Response, ContractError> {
-    instantiate_contract(deps, info.sender, Some(info.funds), instantiate_msg, label)
+    instantiate_contract(deps, info.sender, instantiate_msg, label)
 }
 
 pub fn instantiate_contract(
     deps: DepsMut,
     sender: Addr,
-    funds: Option<Vec<Coin>>,
     instantiate_msg: MultiSigInstantiateMsg,
     label: String,
 ) -> Result<Response, ContractError> {
-    // Check sender is contract owner if set
-    // let ownership = cw_ownable::get_ownership(deps.storage)?;
-    // if ownership
-    //     .owner
-    //     .as_ref()
-    //     .map_or(false, |owner| *owner != sender)
-    // {
-    //     return Err(ContractError::Unauthorized {});
-    // }
-
     let code_id = MULTISIG_CODE_ID.load(deps.storage)?;
 
     // Instantiate the specified contract with owner as the admin.
@@ -100,7 +83,7 @@ pub fn instantiate_contract(
         admin: Some(sender.to_string()),
         code_id,
         msg: to_json_binary(&instantiate_msg)?,
-        funds: funds.unwrap_or_default(),
+        funds: vec![],
         label,
     };
 
@@ -115,18 +98,45 @@ pub fn instantiate_contract(
 pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractError> {
     match msg.id {
         INSTANTIATE_CONTRACT_REPLY_ID => {
-            let res = parse_reply_instantiate_data(msg)?;
-            let contract_addr = deps.api.addr_validate(&res.contract_address)?;
-            // Make the contract its own admin.
-            let msg = WasmMsg::UpdateAdmin {
-                contract_addr: contract_addr.to_string(),
-                admin: contract_addr.to_string(),
-            };
+            let result = msg.result.into_result().map_err(StdError::generic_err)?;
+            let event = result
+                .events
+                .iter()
+                .find(|event| event.ty == "instantiate")
+                .ok_or_else(|| StdError::generic_err("cannot find `instantiate_contract` event"))?;
 
-            Ok(Response::default()
-                .add_attribute("new_multisig_wallet", contract_addr)
-                .add_message(msg))
+            let contract_address = &event
+                .attributes
+                .iter()
+                .find(|attr| attr.key == "_contract_address")
+                .ok_or_else(|| StdError::generic_err("cannot find `contract_address` attribute"))?
+                .value;
+
+            MINTED_MULTISIG_WALLETS.update(
+                deps.storage,
+                |mut wallets| -> StdResult<Vec<String>> {
+                    wallets.push(contract_address.to_string());
+                    Ok(wallets)
+                },
+            )?;
+
+            Ok(Response::new()
+                .add_attribute("method", "handle_instantiate_reply")
+                .add_attribute("contract_address", contract_address))
         }
         _ => Err(ContractError::UnknownReplyID {}),
     }
+}
+
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+    match msg {
+        QueryMsg::GetMultisigWallets {} => to_json_binary(&query_multisig_wallets(deps)?),
+    }
+}
+
+fn query_multisig_wallets(deps: Deps) -> StdResult<MultisigWallets> {
+    Ok(MultisigWallets {
+        wallets: MINTED_MULTISIG_WALLETS.load(deps.storage)?,
+    })
 }
