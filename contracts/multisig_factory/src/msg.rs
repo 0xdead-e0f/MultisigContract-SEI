@@ -1,4 +1,5 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
+use cosmwasm_std::Addr;
 use multisig::msg::InstantiateMsg as MultiSigInstantiateMsg;
 
 #[cw_serde]
@@ -29,5 +30,8 @@ pub enum ExecuteMsg {
 #[derive(QueryResponses)]
 pub enum QueryMsg {
     #[returns(cosmwasm_std::Binary)]
-    GetMultisigWallets {},
+    GetAllMultisigWallets {},
+
+    #[returns(cosmwasm_std::Binary)]
+    GetMultisigWalletsByOwner { owner: Addr },
 }

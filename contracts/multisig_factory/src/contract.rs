@@ -10,7 +10,9 @@ use cw2::set_contract_version;
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, MultisigWallets, QueryMsg};
-use crate::state::{MINTED_MULTISIG_WALLETS, MULTISIG_CODE_ID};
+use crate::state::{
+    MINTED_MULTISIG_WALLETS, MULTISIG_CODE_ID, MULTISIG_WALLET_MAP, TEMP_WALLET_OWNER,
+};
 
 pub(crate) const CONTRACT_NAME: &str = "crates.io:cw-multisig-factory";
 pub(crate) const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -87,6 +89,8 @@ pub fn instantiate_contract(
         label,
     };
 
+    TEMP_WALLET_OWNER.save(deps.storage, &sender)?;
+
     let msg = SubMsg::reply_on_success(instantiate, INSTANTIATE_CONTRACT_REPLY_ID);
 
     Ok(Response::default()
@@ -120,6 +124,13 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
                 },
             )?;
 
+            let owner = TEMP_WALLET_OWNER.load(deps.storage)?;
+            let mut owner_wallets = MULTISIG_WALLET_MAP
+                .load(deps.storage, owner.clone())
+                .unwrap_or(Vec::new());
+            owner_wallets.push(contract_address.clone());
+            MULTISIG_WALLET_MAP.save(deps.storage, owner, &owner_wallets)?;
+
             Ok(Response::new()
                 .add_attribute("method", "handle_instantiate_reply")
                 .add_attribute("contract_address", contract_address))
@@ -131,7 +142,10 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::GetMultisigWallets {} => to_json_binary(&query_multisig_wallets(deps)?),
+        QueryMsg::GetAllMultisigWallets {} => to_json_binary(&query_multisig_wallets(deps)?),
+        QueryMsg::GetMultisigWalletsByOwner { owner } => {
+            to_json_binary(&query_multisig_wallets_by_owner(deps, owner)?)
+        }
     }
 }
 
@@ -139,4 +153,11 @@ fn query_multisig_wallets(deps: Deps) -> StdResult<MultisigWallets> {
     Ok(MultisigWallets {
         wallets: MINTED_MULTISIG_WALLETS.load(deps.storage)?,
     })
+}
+
+fn query_multisig_wallets_by_owner(deps: Deps, owner: Addr) -> StdResult<MultisigWallets> {
+    let wallets = MULTISIG_WALLET_MAP
+        .load(deps.storage, owner)
+        .unwrap_or_default();
+    Ok(MultisigWallets { wallets })
 }
