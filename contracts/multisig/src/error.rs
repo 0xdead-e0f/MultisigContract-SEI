@@ -16,10 +16,10 @@ pub enum ContractError {
     ZeroOwners,
 
     #[error("Transaction with tx_id: {0}, doesn't exist")]
-    NonExistentTx(u32),
+    NonExistentTx(u128),
 
     #[error("You already signed transaction with id: {0}")]
-    AlreadySigned(u32),
+    AlreadySigned(u128),
 
     #[error("Not enough admins signed this transaction, the quorum is {quorum} and only {num_signed} signed the transaction")]
     NotEnoughSignatures { quorum: u32, num_signed: u32 },

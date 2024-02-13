@@ -6,7 +6,7 @@ use cosmwasm_std::{
 
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{PendingTransactions, Transaction, ADMINS, PENDING_TXS, QUORUM, SIGNED_TX};
+use crate::state::{CompletedTransactions, PendingTransactions, Transaction, ADMINS, COMPLETED_TXS, PENDING_TXS, QUORUM, SIGNED_TX, TX_COUNTER};
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -28,8 +28,14 @@ pub fn instantiate(
 
     ADMINS.save(deps.storage, &msg.owners)?;
     QUORUM.save(deps.storage, &msg.quorum)?;
-    let pending = PendingTransactions::new(Vec::new());
-    PENDING_TXS.save(deps.storage, &pending)?;
+    TX_COUNTER.save(deps.storage, &0u128)?;
+
+    let pending_txs = PendingTransactions::new(Vec::new());
+    PENDING_TXS.save(deps.storage, &pending_txs)?;
+
+    let completed_txs = CompletedTransactions::new(Vec::new());
+    COMPLETED_TXS.save(deps.storage, &completed_txs)?;
+
     SIGNED_TX.save(deps.storage, (Addr::unchecked("test"), 0), &false)?;
 
     let events = msg
@@ -60,8 +66,15 @@ mod exec {
     use crate::state::{TxMsg, PENDING_TXS, SIGNED_TX};
     use cosmwasm_std::{Addr, BankMsg};
 
+    pub fn make_next_id(deps: DepsMut) -> StdResult<u128> {
+        let mut tx_counter = TX_COUNTER.load(deps.storage)?;
+        tx_counter += 1;
+        TX_COUNTER.save(deps.storage, &tx_counter)?;
+        Ok(tx_counter)
+    }
+
     pub fn create_tx(
-        deps: DepsMut,
+        mut deps: DepsMut,
         info: MessageInfo,
         tx_msg: TxMsg,
     ) -> Result<Response, ContractError> {
@@ -72,7 +85,7 @@ mod exec {
         }
 
         let mut pending_txs = PENDING_TXS.load(deps.storage)?;
-        let next_id = pending_txs.next_id();
+        let next_id = make_next_id(deps.branch())?;
         let mut tx = Transaction::new(tx_msg, next_id);
 
         tx.num_confirmations = 1;
@@ -88,7 +101,7 @@ mod exec {
     pub fn sign_tx(
         deps: DepsMut,
         info: MessageInfo,
-        tx_id: u32,
+        tx_id: u128,
     ) -> Result<Response, ContractError> {
         if let Ok(signed) = SIGNED_TX.load(deps.storage, (info.sender.clone(), tx_id)) {
             if signed {
@@ -111,7 +124,7 @@ mod exec {
         Ok(Response::new())
     }
 
-    pub fn execute_tx(deps: DepsMut, tx_id: u32) -> Result<Response, ContractError> {
+    pub fn execute_tx(deps: DepsMut, tx_id: u128) -> Result<Response, ContractError> {
         let pending_txs = PENDING_TXS.load(deps.storage)?;
 
         let tx = pending_txs
@@ -126,6 +139,16 @@ mod exec {
                 num_signed: tx.num_confirmations,
             });
         }
+
+        PENDING_TXS.update(deps.storage, |mut txs|->StdResult<PendingTransactions>{
+            txs.remove(&tx.clone());
+            Ok(txs)
+        })?;
+
+        COMPLETED_TXS.update(deps.storage, |mut txs: CompletedTransactions|-> StdResult<CompletedTransactions>{
+            txs.push(tx.clone());
+            Ok(txs)
+        })?;
 
         let response = match tx.tx_msg.clone() {
             TxMsg::TxBank { to, coins } => {
@@ -143,7 +166,7 @@ mod exec {
                 crate::state::SelfTx::UpdateQuorum { quorum } => update_quorum(deps, quorum),
             },
         };
-
+        
         response
     }
 
@@ -233,7 +256,7 @@ mod query {
     };
     use cosmwasm_std::Addr;
 
-    pub fn list_signed(deps: Deps, admin: Addr, tx_id: u32) -> StdResult<ListSignedResp> {
+    pub fn list_signed(deps: Deps, admin: Addr, tx_id: u128) -> StdResult<ListSignedResp> {
         let signed = SIGNED_TX.load(deps.storage, (admin, tx_id))?;
 
         Ok(ListSignedResp { signed })

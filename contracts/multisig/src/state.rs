@@ -7,7 +7,7 @@ use cw_storage_plus::{Item, Map};
 #[cw_serde]
 pub struct Transaction {
     pub tx_msg: TxMsg,
-    pub id: u32,
+    pub id: u128,
     pub num_confirmations: u32,
 }
 
@@ -35,7 +35,7 @@ impl ToStr for Vec<Coin> {
 }
 
 impl Transaction {
-    pub fn new(tx_msg: TxMsg, id: u32) -> Self {
+    pub fn new(tx_msg: TxMsg, id: u128) -> Self {
         Self {
             tx_msg,
             id,
@@ -83,28 +83,63 @@ impl PendingTransactions {
         Self(txs)
     }
 
-    pub fn index(&self, index: u32) -> Option<&Transaction> {
+    pub fn index(&self, index: u128) -> Option<&Transaction> {
         self.0.iter().nth(index as usize)
-    }
-
-    pub fn next_id(&self) -> u32 {
-        self.0.len() as u32
     }
 
     pub fn push(&mut self, tx: Transaction) {
         self.0.push(tx);
     }
 
-    pub fn find_mut(&mut self, tx_id: u32) -> Option<&mut Transaction> {
+    pub fn find_mut(&mut self, tx_id: u128) -> Option<&mut Transaction> {
         self.0.iter_mut().find(|tx| tx.id == tx_id)
     }
 
-    pub fn find(&self, tx_id: u32) -> Option<&Transaction> {
+    pub fn find(&self, tx_id: u128) -> Option<&Transaction> {
+        self.0.iter().find(|tx| tx.id == tx_id)
+    }
+
+    pub fn remove(&mut self, tx: &Transaction) -> Option<Transaction> {
+        let index = self.0.iter().position(|item|item.id==tx.id);
+        match index {
+            Some(i) => {
+                let ret_tx: Transaction = self.0.remove(i);
+                Some(ret_tx)
+            },
+            None => None
+        }
+
+    }
+}
+
+#[cw_serde]
+pub struct CompletedTransactions(pub Vec<Transaction>);
+
+impl CompletedTransactions {
+    pub fn new(txs: Vec<Transaction>) -> Self {
+        Self(txs)
+    }
+
+    pub fn index(&self, index: u128) -> Option<&Transaction> {
+        self.0.iter().nth(index as usize)
+    }
+
+    pub fn push(&mut self, tx: Transaction) {
+        self.0.push(tx);
+    }
+
+    pub fn find_mut(&mut self, tx_id: u128) -> Option<&mut Transaction> {
+        self.0.iter_mut().find(|tx| tx.id == tx_id)
+    }
+
+    pub fn find(&self, tx_id: u128) -> Option<&Transaction> {
         self.0.iter().find(|tx| tx.id == tx_id)
     }
 }
 
 pub const ADMINS: Item<Vec<Addr>> = Item::new("admins");
 pub const QUORUM: Item<u32> = Item::new("quorum");
+pub const TX_COUNTER: Item<u128> = Item::new("tx_counter");
 pub const PENDING_TXS: Item<PendingTransactions> = Item::new("pending_txs");
-pub const SIGNED_TX: Map<(Addr, u32), bool> = Map::new("signed_tx");
+pub const COMPLETED_TXS: Item<CompletedTransactions> = Item::new("completed_txs");
+pub const SIGNED_TX: Map<(Addr, u128), bool> = Map::new("signed_tx");

@@ -14,8 +14,8 @@ pub struct InstantiateMsg {
 #[cw_serde]
 pub enum ExecuteMsg {
     CreateTransaction { tx_msg: TxMsg },
-    SignTransactions { tx_id: u32 },
-    ExecuteTransaction { tx_id: u32 },
+    SignTransactions { tx_id: u128 },
+    ExecuteTransaction { tx_id: u128 },
 }
 
 #[cw_serde]
@@ -28,7 +28,7 @@ pub enum QueryMsg {
     ListAdmins {},
 
     #[returns(ListSignedResp)]
-    ListSigned { admin: Addr, tx_id: u32 },
+    ListSigned { admin: Addr, tx_id: u128 },
 }
 
 #[cw_serde]
