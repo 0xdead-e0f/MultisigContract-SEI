@@ -127,9 +127,8 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
 
             let owner = TEMP_WALLET_OWNER.load(deps.storage)?;
             let mut owner_wallets = MULTISIG_WALLET_MAP
-                .may_load(deps.storage, owner.clone())
-                .unwrap_or(Some(Vec::new()))
-                .unwrap();
+                .load(deps.storage, owner.clone())
+                .unwrap_or_default();
 
             // let owner_wallets = MULTISIG_WALLET_MAP.load(deps.storage, owner);
             owner_wallets.push(contract_address.clone());
