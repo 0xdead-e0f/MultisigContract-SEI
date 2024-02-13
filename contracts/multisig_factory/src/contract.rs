@@ -125,9 +125,17 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
             )?;
 
             let owner = TEMP_WALLET_OWNER.load(deps.storage)?;
-            let mut owner_wallets = MULTISIG_WALLET_MAP
-                .load(deps.storage, owner.clone())
-                .unwrap_or(Vec::new());
+            // let mut owner_wallets = MULTISIG_WALLET_MAP
+            //     .load(deps.storage, owner.clone())
+            //     .unwrap_or(Vec::new());
+            let owner_wallets = MULTISIG_WALLET_MAP.may_load(deps.storage, owner.clone())?;
+            let mut owner_wallets = if let Some(owner_wallets) = owner_wallets {
+                owner_wallets
+            } else  {
+                vec![]
+            };
+
+            // let owner_wallets = MULTISIG_WALLET_MAP.load(deps.storage, owner);
             owner_wallets.push(contract_address.clone());
             MULTISIG_WALLET_MAP.save(deps.storage, owner, &owner_wallets)?;
 
