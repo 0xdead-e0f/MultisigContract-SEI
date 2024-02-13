@@ -1,8 +1,7 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
-    StdResult, SubMsg, WasmMsg,
+    to_json_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Order, Reply, Response, StdError, StdResult, SubMsg, WasmMsg
 };
 use multisig::msg::InstantiateMsg as MultiSigInstantiateMsg;
 
@@ -11,7 +10,7 @@ use cw2::set_contract_version;
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, MultisigWallets, QueryMsg};
 use crate::state::{
-    MINTED_MULTISIG_WALLETS, MULTISIG_CODE_ID, MULTISIG_WALLET_MAP, TEMP_WALLET_OWNER,
+    MULTISIG_CODE_ID, MULTISIG_WALLET_MAP, TEMP_WALLET_OWNER,
 };
 
 pub(crate) const CONTRACT_NAME: &str = "crates.io:cw-multisig-factory";
@@ -116,13 +115,6 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
                 .ok_or_else(|| StdError::generic_err("cannot find `contract_address` attribute"))?
                 .value;
 
-            MINTED_MULTISIG_WALLETS.update(
-                deps.storage,
-                |mut wallets| -> StdResult<Vec<String>> {
-                    wallets.push(contract_address.clone().to_string());
-                    Ok(wallets)
-                },
-            )?;
 
             let owner = TEMP_WALLET_OWNER.load(deps.storage)?;
             let mut owner_wallets = MULTISIG_WALLET_MAP
@@ -155,7 +147,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 
 fn query_multisig_wallets(deps: Deps) -> StdResult<MultisigWallets> {
     Ok(MultisigWallets {
-        wallets: MINTED_MULTISIG_WALLETS.load(deps.storage)?,
+        wallets: vec![]
     })
 }
 
