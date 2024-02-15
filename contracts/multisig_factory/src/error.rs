@@ -19,4 +19,7 @@ pub enum ContractError {
 
     #[error(transparent)]
     Ownable(#[from] OwnershipError),
+
+    #[error("Not nft holder")]
+    NotNftHolder {},
 }

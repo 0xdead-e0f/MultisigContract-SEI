@@ -6,6 +6,7 @@ use multisig::msg::InstantiateMsg as MultiSigInstantiateMsg;
 pub struct InstantiateMsg {
     pub owner: Option<String>,
     pub multisig_code_id: u64,
+    pub cw721_address: Option<Addr>,
 }
 
 #[cw_serde]
@@ -24,6 +25,10 @@ pub enum ExecuteMsg {
     /// Callable only by the current owner. Updates the code ID used
     /// while instantiating multisig contracts.
     UpdateCodeId { multisig_code_id: u64 },
+
+    /// Callable only by the current owner. Updates the CW-721 used
+    /// while instantiating multisig contracts.
+    UpdateNFTAddress { cw721_address: Addr },
 }
 
 #[cw_serde]

@@ -1,8 +1,8 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    to_json_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Reply, Response, StdError,
-    StdResult, SubMsg, WasmMsg,
+    to_json_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, QueryRequest, Reply, Response,
+    StdError, StdResult, SubMsg, WasmMsg, WasmQuery,
 };
 use multisig::msg::InstantiateMsg as MultiSigInstantiateMsg;
 
@@ -11,8 +11,10 @@ use cw2::set_contract_version;
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, MultisigWallets, QueryMsg};
 use crate::state::{
-    MINTED_MULTISIG_WALLETS, MULTISIG_CODE_ID, MULTISIG_WALLET_MAP, TEMP_WALLET_OWNER,
+    MINTED_MULTISIG_WALLETS, MULTISIG_CODE_ID, MULTISIG_WALLET_MAP, NFT_ADDRESS, TEMP_WALLET_OWNER,
 };
+
+use cw721::{Cw721QueryMsg, TokensResponse};
 
 pub(crate) const CONTRACT_NAME: &str = "crates.io:cw-multisig-factory";
 pub(crate) const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -27,8 +29,14 @@ pub fn instantiate(
 ) -> Result<Response, ContractError> {
     cw_ownable::initialize_owner(deps.storage, deps.api, msg.owner.as_deref())?;
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+
     MULTISIG_CODE_ID.save(deps.storage, &msg.multisig_code_id)?;
     MINTED_MULTISIG_WALLETS.save(deps.storage, &Vec::<String>::new())?;
+
+    if let Some(addr) = msg.cw721_address {
+        NFT_ADDRESS.save(deps.storage, &addr)?;
+    }
+
     Ok(Response::new()
         .add_attribute("method", "instantiate")
         .add_attribute("creator", info.sender))
@@ -49,6 +57,9 @@ pub fn execute(
         ExecuteMsg::UpdateCodeId { multisig_code_id } => {
             execute_update_code_id(deps, info, multisig_code_id)
         }
+        ExecuteMsg::UpdateNFTAddress { cw721_address } => {
+            execute_update_nft_address(deps, info, cw721_address)
+        }
     }
 }
 
@@ -62,6 +73,18 @@ pub fn execute_update_code_id(
     Ok(Response::default()
         .add_attribute("action", "update_code_id")
         .add_attribute("multisig_code_id", multisig_code_id.to_string()))
+}
+
+pub fn execute_update_nft_address(
+    deps: DepsMut,
+    info: MessageInfo,
+    cw721_address: Addr,
+) -> Result<Response, ContractError> {
+    cw_ownable::assert_owner(deps.storage, &info.sender)?;
+    NFT_ADDRESS.save(deps.storage, &cw721_address)?;
+    Ok(Response::default()
+        .add_attribute("action", "update_code_id")
+        .add_attribute("nft_contract_address", cw721_address.to_string()))
 }
 
 pub fn execute_instantiate_multisig_contract(
@@ -80,6 +103,22 @@ pub fn instantiate_contract(
     label: String,
 ) -> Result<Response, ContractError> {
     let code_id = MULTISIG_CODE_ID.load(deps.storage)?;
+    let nft_addr = NFT_ADDRESS.load(deps.storage)?;
+
+    // Check if the multisig creator holds the nft
+    let cw721_query_result: TokensResponse =
+        deps.querier.query(&QueryRequest::Wasm(WasmQuery::Smart {
+            contract_addr: nft_addr.to_string(),
+            msg: to_json_binary(&Cw721QueryMsg::Tokens {
+                owner: sender.to_string(),
+                start_after: None,
+                limit: None,
+            })?,
+        }))?;
+
+    if cw721_query_result.tokens.len() < 1 {
+        return Err(ContractError::NotNftHolder {});
+    }
 
     // Instantiate the specified contract with owner as the admin.
     let instantiate = WasmMsg::Instantiate {
@@ -132,7 +171,7 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> Result<Response, ContractE
 
             // let owner_wallets = MULTISIG_WALLET_MAP.load(deps.storage, owner);
             owner_wallets.push(contract_address.clone());
-            
+
             MULTISIG_WALLET_MAP.save(deps.storage, owner, &owner_wallets)?;
 
             Ok(Response::new()
