@@ -245,13 +245,15 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::ListSigned { admin, tx_id } => {
             to_json_binary(&query::list_signed(deps, admin, tx_id)?)
         }
+        QueryMsg::ListCompletedTxs { offset, limit } => to_json_binary(&query::list_completed_txs(deps, offset, limit)?),
+        QueryMsg::GetQuorum {  } => to_json_binary(&query::get_quorum(deps)?),
     }
 }
 
 mod query {
     use super::*;
     use crate::{
-        msg::{ListAdminsResp, ListPendingResp, ListSignedResp},
+        msg::{ListAdminsResp, ListCompletedTxsResp, ListPendingResp, ListSignedResp},
         state::{PENDING_TXS, SIGNED_TX},
     };
     use cosmwasm_std::Addr;
@@ -271,5 +273,34 @@ mod query {
         let transactions = PENDING_TXS.load(deps.storage)?;
 
         Ok(ListPendingResp { transactions })
+    }
+
+    pub fn list_completed_txs(deps: Deps, offset: Option<u32>, limit: Option<u32>) ->StdResult<ListCompletedTxsResp> {
+        let completed_txs = COMPLETED_TXS.load(deps.storage)?;
+
+        let start_pos = offset.unwrap_or(0) as usize;
+        let end_pos = match limit {
+            Some(lim) => start_pos + lim as usize,
+            None => completed_txs.0.len(), // If no limit is provided, fetch all to the end.
+        };
+
+        let end_pos = end_pos.min(completed_txs.0.len());
+
+        let paginated_txs = if start_pos < completed_txs.0.len() {
+            &completed_txs.0[start_pos..end_pos]
+        } else {
+            &[] // If start_pos is out of bounds, return an empty slice.
+        };
+
+        let resp = ListCompletedTxsResp {
+            transactions: CompletedTransactions(paginated_txs.to_vec()), // This might require adjustment depending on your actual types and structures.
+        };
+
+        Ok(resp)
+    }
+
+    pub fn get_quorum(deps: Deps) ->StdResult<u32> {
+        let quorum = QUORUM.load(deps.storage)?;
+        Ok(quorum)
     }
 }

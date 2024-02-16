@@ -1,7 +1,7 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::Addr;
 
-use crate::state::{PendingTransactions, TxMsg};
+use crate::state::{CompletedTransactions, PendingTransactions, TxMsg};
 
 #[cw_serde]
 pub struct InstantiateMsg {
@@ -24,11 +24,17 @@ pub enum QueryMsg {
     #[returns(ListPendingResp)]
     ListPending {},
 
+    #[returns(ListPendingResp)]
+    ListCompletedTxs {offset: Option<u32>, limit: Option<u32>},
+
     #[returns(ListAdminsResp)]
     ListAdmins {},
 
     #[returns(ListSignedResp)]
     ListSigned { admin: Addr, tx_id: u128 },
+
+    #[returns(u32)]
+    GetQuorum {},
 }
 
 #[cw_serde]
@@ -45,3 +51,9 @@ pub struct ListAdminsResp {
 pub struct ListPendingResp {
     pub transactions: PendingTransactions,
 }
+
+#[cw_serde]
+pub struct ListCompletedTxsResp {
+    pub transactions: CompletedTransactions,
+}
+
